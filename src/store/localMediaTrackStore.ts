@@ -1,8 +1,22 @@
 import { create } from "zustand";
-import { devtools, subscribeWithSelector } from "zustand/middleware";
-import { immer } from "zustand/middleware/immer";
-import { Room, createLocalTracks } from "livekit-client";
-import type { LocalMediaTrackState } from "../types/localMediaTrack";
+import { devtools } from "zustand/middleware";
+import {
+  LocalTrack,
+  Room,
+  Track,
+  createLocalAudioTrack,
+  createLocalVideoTrack,
+} from "livekit-client";
+import { supportsBackgroundProcessors } from "@livekit/track-processors";
+
+export interface LocalMediaTrackState {
+  // 로컬 미디어 트랙 상태
+  videoTrack: LocalTrack<Track.Kind.Video> | null;
+  audioTrack: LocalTrack<Track.Kind.Audio> | null;
+
+  isProcessing: boolean;
+  isTracksPublished: boolean;
+}
 
 interface LocalMediaTrackActions {
   // 로컬 미디어 트랙 생성/해제
@@ -15,241 +29,126 @@ interface LocalMediaTrackActions {
   createLocalMediaTrack: () => Promise<void>;
   destroyLocalMediaTrack: () => void;
 
-  // 기본 컨트롤
-  toggle: () => Promise<void>;
-  enable: () => Promise<void>;
-  disable: () => void;
-  mute: () => void;
-  unmute: () => void;
+  // // 기본 컨트롤
+  // toggle: () => Promise<void>;
+  // enable: () => Promise<void>;
+  // disable: () => void;
+  // mute: () => void;
+  // unmute: () => void;
 
-  // 카메라 전환
-  switchCamera: (deviceId?: string) => Promise<void>;
-  flipCamera: () => Promise<void>;
+  // // 카메라 전환
+  // switchCamera: (deviceId?: string) => Promise<void>;
+  // flipCamera: () => Promise<void>;
 
   // 방 연동
   publishLocalMediaTrack: (room: Room) => Promise<void>;
   unpublishLocalMediaTrack: (room: Room) => Promise<void>;
+  applyVirtualBackground: (backgroundValue?: string) => Promise<void>;
 
-  // 상태 관리
-  setError: (error: string) => void;
-  clearError: () => void;
-  reset: () => void;
+  // // 상태 관리
+  // setError: (error: string) => void;
+  // clearError: () => void;
+  // reset: () => void;
 }
 
 type LocalMediaTrackStore = LocalMediaTrackState & LocalMediaTrackActions;
 
 const initialState: LocalMediaTrackState = {
-  localMediaTrack: null,
+  videoTrack: null,
+  audioTrack: null,
+  isProcessing: false,
+  isTracksPublished: false,
 };
 
 export const useLocalMediaTrackStore = create<LocalMediaTrackStore>()(
   devtools(
-    subscribeWithSelector(
-      immer((set, get) => ({
-        ...initialState,
+    (set, get) => ({
+      ...initialState,
 
-        createLocalMediaTrack: async () => {
-          const state = get();
+      createLocalMediaTrack: async () => {
+        set({ isProcessing: true });
 
-          // 이미 로컬 미디어 트랙이 있으면 정리
-          if (state.localMediaTrack) {
-            state.localMediaTrack.stop();
+        try {
+          const audioTrack = await createLocalAudioTrack();
+          const videoTrack = await createLocalVideoTrack();
+
+          if (!supportsBackgroundProcessors()) {
+            console.warn(
+              "Background processors are not supported in this environment."
+            );
           }
 
-          try {
-            const localMediaTrack = await createLocalTracks({
-              audio: true,
-              video: true,
-            });
+          // const virtual = VirtualBackground("");
+          // await videoTrack.setProcessor(virtual);
 
-            set((state) => {
-              state.localMediaTrack = localMediaTrack;
-            });
-          } catch (error) {
-            console.error(error);
-          }
-        },
-
-        destroyLocalMediaTrack: () => {
-          const state = get();
-          if (state.localMediaTrack) {
-            state.localMediaTrack.stop();
-            set((state) => {
-              state.localMediaTrack = undefined;
-              state.isEnabled = false;
-              state.isPublished = false;
-            });
-          }
-        },
-
-        toggle: async () => {
-          const { isEnabled, enable, disable } = get();
-          if (isEnabled) {
-            disable();
-          } else {
-            await enable();
-          }
-        },
-
-        enable: async () => {
-          const state = get();
-          if (!state.localMediaTrack) {
-            await get().createLocalMediaTrack();
-          } else {
-            set((state) => {
-              state.isEnabled = true;
-            });
-          }
-        },
-
-        disable: () => {
-          const state = get();
-          if (state.localMediaTrack) {
-            state.localMediaTrack.stop();
-          }
-          set((state) => {
-            state.localMediaTrack = undefined;
-            state.isEnabled = false;
-            state.isPublished = false;
+          set({
+            audioTrack,
+            videoTrack,
+            isProcessing: false,
           });
-        },
-
-        mute: () => {
-          const state = get();
-          if (state.localMediaTrack && state.isEnabled) {
-            state.localMediaTrack.mute();
-            set((state) => {
-              state.isMuted = true;
-            });
-          }
-        },
-
-        unmute: () => {
-          const state = get();
-          if (state.localMediaTrack && state.isEnabled) {
-            state.localMediaTrack.setEnabled(true);
-            set((state) => {
-              state.isMuted = false;
-            });
-          }
-        },
-
-        switchCamera: async (deviceId?: string) => {
-          const state = get();
-
-          if (!deviceId) {
-            console.warn("Device ID is required for camera switch");
-            return;
-          }
-
-          try {
-            if (state.localMediaTrack) {
-              // 기존 로컬 미디어 트랙으로 카메라 전환 시도
-              await state.localMediaTrack.switchCamera(deviceId);
-              set((state) => {
-                state.deviceId = deviceId;
-              });
-            } else {
-              // 새 로컬 미디어 트랙 생성
-              await get().createLocalMediaTrack({ deviceId });
-            }
-          } catch (error) {
-            // 전환 실패 시 새 로컬 미디어 트랙 생성
-            try {
-              await get().createLocalMediaTrack({ deviceId });
-            } catch (createError) {
-              set((state) => {
-                state.error = "Failed to switch camera";
-              });
-              throw createError;
-            }
-          }
-        },
-
-        flipCamera: async () => {
-          const state = get();
-          const newFacingMode =
-            state.facingMode === "user" ? "environment" : "user";
-
-          try {
-            await get().createLocalMediaTrack({ facingMode: newFacingMode });
-          } catch (error) {
-            set((state) => {
-              state.error = "Failed to flip camera";
-            });
-            throw error;
-          }
-        },
-
-        publishLocalMediaTrack: async (room: Room) => {
-          const state = get();
-
-          if (!state.localMediaTrack || !state.isEnabled) {
-            throw new Error("No local media track to publish");
-          }
-
-          try {
-            await room.localParticipant.publishTrack(state.localMediaTrack, {
-              videoEncoding: {
-                maxBitrate: 1_500_000,
-                maxFramerate: 30,
-              },
-              simulcast: true,
-              source: "camera",
-            });
-
-            set((state) => {
-              state.isPublished = true;
-            });
-          } catch (error) {
-            set((state) => {
-              state.error = "Failed to publish local media track";
-            });
-            throw error;
-          }
-        },
-
-        unpublishLocalMediaTrack: async (room: Room) => {
-          const state = get();
-
-          if (!state.localMediaTrack || !state.isPublished) {
-            return;
-          }
-
-          try {
-            await room.localParticipant.unpublishTrack(state.localMediaTrack);
-            set((state) => {
-              state.isPublished = false;
-            });
-          } catch (error) {
-            set((state) => {
-              state.error = "Failed to unpublish local media track";
-            });
-            throw error;
-          }
-        },
-
-        setError: (error: string) => {
-          set((state) => {
-            state.error = error;
+          console.log("Local media tracks created:", {
+            audioTrack,
+            videoTrack,
           });
-        },
+        } catch (error) {
+          console.error("Error creating local media track:", error);
+          set({ isProcessing: false });
+          throw error;
+        }
+      },
 
-        clearError: () => {
-          set((state) => {
-            state.error = undefined;
-          });
-        },
+      destroyLocalMediaTrack: () => {
+        const state = get();
+        if (state.audioTrack) {
+          state.audioTrack.stop();
+        }
+        if (state.videoTrack) {
+          state.videoTrack.stop();
+        }
+        set({ audioTrack: null, videoTrack: null });
+        console.log("Local media tracks destroyed");
+      },
 
-        reset: () => {
-          const state = get();
-          if (state.localMediaTrack) {
-            state.localMediaTrack.stop();
+      publishLocalMediaTrack: async (room: Room) => {
+        const state = get();
+
+        if (!state.audioTrack && !state.videoTrack) {
+          throw new Error("No local media track to publish");
+        }
+
+        try {
+          if (state.audioTrack) {
+            await room.localParticipant.publishTrack(state.audioTrack);
           }
-          set(() => ({ ...initialState }));
-        },
-      }))
-    ),
+          if (state.videoTrack) {
+            await room.localParticipant.publishTrack(state.videoTrack);
+          }
+        } catch (error) {
+          console.error("Failed to publish local media track", error);
+          throw error;
+        }
+      },
+
+      unpublishLocalMediaTrack: async (room: Room) => {
+        const state = get();
+
+        if (!state.audioTrack && !state.videoTrack) {
+          return;
+        }
+
+        try {
+          if (state.audioTrack) {
+            await room.localParticipant.unpublishTrack(state.audioTrack);
+          }
+          if (state.videoTrack) {
+            await room.localParticipant.unpublishTrack(state.videoTrack);
+          }
+        } catch (error) {
+          console.error("Failed to publish local media track", error);
+          throw error;
+        }
+      },
+    }),
     { name: "local-media-track-store" }
   )
 );
